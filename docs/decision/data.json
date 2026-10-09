@@ -1,0 +1,78 @@
+{
+ "meta": {
+  "title": "WhatsApp in Agent Base · phase 1 decision",
+  "description": "Which WhatsApp link, where it runs, what it costs, the ban risk, how it reconnects.",
+  "stream": "agents",
+  "crumb": [{"label": "Agent Base", "href": "#top"}, {"label": "WhatsApp space"}, {"label": "phase 1 decision"}],
+  "actions": [{"label": "sisodias/siso-whatsapp-link", "href": "https://github.com/sisodias/siso-whatsapp-link", "icon": "gavel", "external": true}],
+  "source": "brief: siso-firstmate .agents/a0/tell/2026-10-03-whatsapp-owner-brief.md · inventory 3 Oct 01:00–01:15"
+ },
+ "id": "WA-1",
+ "heading": {
+  "breadcrumb": [{"label": "Agent Base"}, {"label": "WhatsApp"}, {"label": "WA-1"}],
+  "kicker": "decision <span class=\"sep\">·</span> WA-1 <span class=\"sep\">·</span> <span class=\"dim\">3 Oct 2026 · recommended, awaiting your pick</span>",
+  "title": "A small whatsmeow link on the Mac mini, read by Agent Base",
+  "subtitle": "Your own number, linked as one more device (like WhatsApp Desktop). The mini holds the link and the message store; the laptop app is only a window onto it. The old OpenWA browser gateway on the VPS stays off.",
+  "badges": [{"label": "recommended · option 1", "tone": "now", "dot": true}, {"label": "ban risk: real, kept low", "tone": "warn", "href": "#reversal"}, {"label": "your one action: scan a QR, end of phase 2", "tone": "agents"}],
+  "status": {
+   "kicker": "Measured",
+   "value": "15 MB resident",
+   "note": "A whatsmeow test build on the laptop reached WhatsApp's servers and was issued a linking QR at 15 MB RSS (before linking; a linked session with its message store is expected around 50–150 MB, to be measured in the soak). OpenWA held ~984 MB and OOM-killed the VPS 3 times on 11 Sep.",
+   "facts": [
+    {"k": "mini", "v": "16 GB RAM · 58 GB free · sleep disabled · up 1 day · UK home line (Virgin Media)"},
+    {"k": "VPS", "v": "7.9 GB · 2.6 GB already in swap · Contabo datacentre IP"},
+    {"k": "old gateway", "v": "stopped since 12 Sep · key compromised · not reused"}
+   ]
+  },
+  "metrics": [
+   {"value": 814, "label": "chats in the 12 Sep snapshot (653 DMs, 161 groups)", "tone": "agents"},
+   {"value": 15, "label": "MB: whatsmeow test, pre-link", "tone": "now"},
+   {"value": 984, "label": "MB: old OpenWA Chromium", "tone": "warn"},
+   {"value": 5, "label": "options ranked", "tone": "muted", "href": "#effects"}
+  ],
+  "jump": [
+   {"label": "The decision", "href": "#decision"},
+   {"label": "Your words", "href": "#words"},
+   {"label": "Options, ranked", "href": "#effects"},
+   {"label": "Ban risk and what reverses it", "href": "#reversal"},
+   {"label": "How it fits together", "href": "#map"},
+   {"label": "Phases", "href": "#timeline"}
+  ]
+ },
+ "sections": {
+  "decision": {"n": "01", "title": "The decision", "sub": "recommended; Agent Base / you pick"},
+  "words": {"n": "02", "title": "Your words"},
+  "effects": {"n": "03", "title": "Options, ranked", "sub": "which WhatsApp link × which box"},
+  "reversal": {"n": "04", "title": "Ban risk, plainly, and what would change the pick"},
+  "map": {"n": "05", "title": "How it fits together"},
+  "timeline": {"n": "06", "title": "Phases"},
+  "agent": {"n": "07", "title": "Agent entry"}
+ },
+ "call": "<b>Build option 1:</b> a small Go service on <b>whatsmeow</b> (the library behind the mautrix and Beeper WhatsApp bridges, MPL-2.0, last pushed 29 Sep) on the <b>Mac mini</b>, linked to your own number as a companion device. It keeps every chat and group with history, unread counts, media thumbnails and search in a local store on the mini, reconnects by itself, and exposes a token-guarded API on the tailnet only. Agent Base's node proxies it into a <b>WhatsApp space</b> behind a feature flag, and feeds the Rolodex last-contact and message counts (never bodies). Sends happen only when you press Send on a message you wrote or approved.<br><br><b>Why the mini, not the VPS:</b> a home broadband IP looks like an ordinary WhatsApp Desktop; Contabo is a datacentre range, which WhatsApp scores as riskier. The mini also has 16 GB against the VPS's 7.9 GB with 2.6 GB already swapped. <b>Why not the laptop</b> (your 2 Oct idea, same IP as your phone): it sleeps and travels, so the chats would stop whenever the lid shuts; linked devices on a different home IP from the phone are normal (Desktop at home, phone abroad).<br><br><b>One gap I found:</b> FileVault is off on the mini, so the message store would sit unencrypted on its disk. I will encrypt message bodies in the store with a key held in the mini's Keychain, so this does not wait on you.",
+ "words": [
+  {"text": "i kind of like to make it so like i don't have to ever go on whatsapp ... so I get all of my group chats and primary ... make it lightweight and bring it into our Coding app ... you kind of do have a bit more access for the rolodex to do some cool shit with it", "who": "Shaan → A0", "at": "3 Oct 01:15"},
+  {"text": "my agents could also message on WhatsApp ... that might be something worth running here internally on our laptop instead of wasting shit on the SISO VPS ... it runs on the same my IP is my WhatsApp so it'll be safer", "who": "Shaan → A0", "at": "2 Oct 14:56"},
+  {"text": "If you look on the Mac Mini Yeah the WhatsApp", "who": "Shaan → A0", "at": "3 Oct 01:05"}
+ ],
+ "effects": {"items": [
+  {"label": "1 · whatsmeow (Go) on the Mac mini", "what": "~15 MB measured pre-link; one binary; launchd KeepAlive; home IP; 16 GB box. Cost: the mini must stay on (it already runs SISO launchd services with sleep off). Recommended.", "state": "pick", "tone": "now"},
+  {"label": "2 · Baileys (Node) on the Mac mini", "what": "Same protocol, MIT, pushed 2 Oct; Hermes' bridge already on the mini is prior art. Heavier (Node heap, ~100–250 MB) and a history of breaking releases and store leaks. The fallback if whatsmeow breaks.", "state": "fallback", "tone": "agents"},
+  {"label": "3 · whatsmeow on the VPS", "what": "Always on and already the agents' home, but a datacentre IP (higher ban score) on a box that is swapping and OOM'd on 11 Sep. Only if the mini proves unreliable in the soak.", "state": "standby", "tone": "muted"},
+  {"label": "4 · restart OpenWA (whatsapp-web.js + Chromium) on the VPS", "what": "Rejected: 984 MB, crashed the box 3×, 'Browser process closed or crashed' loop in its log, compromised API key.", "state": "no", "tone": "warn"},
+  {"label": "5 · Meta's official WhatsApp Business API", "what": "Rejected: it cannot read your personal chats or groups; it is for a business number only.", "state": "no", "tone": "warn"}
+ ]},
+ "reverses": "<b>The risk:</b> every non-Meta WhatsApp client (whatsmeow, Baileys, OpenWA alike) breaks WhatsApp's terms, and numbers do get restricted or banned. Bans hit bulk or automated sending, new numbers, and datacentre traffic far more than a quiet linked device. <b>Mitigations built in:</b> the official multi-device link (same protocol as Desktop, one device, not a second login); a home IP; no bulk sends, ever; sends only on your explicit press, rate-limited to human pace (one at a time, a few seconds apart, a daily ceiling); no broadcast, no auto-replies, no adding people to groups; read receipts only when you open a chat in the app, like a normal client; profile photos fetched lazily, never crawled. <b>Keep in mind:</b> WhatsApp unlinks companion devices if your phone is offline for 14 days.<br><br><b>What would change the pick:</b> the 24 h soak showing the mini drop off the tailnet or whatsmeow reconnect-looping (then option 3, or 2); WhatsApp shipping a protocol change whatsmeow lags on (then Baileys); or you deciding you would rather link a second number than your own.",
+ "state": [{"label": "recommended", "tone": "now", "dot": true}, {"label": "awaiting your pick", "tone": "agents"}],
+ "map": {"centre": {"label": "WhatsApp link", "href": "#top"}, "types": [
+  {"type": "box", "label": "Mac mini (always on)", "tone": "projects", "items": [{"label": "siso-whatsapp-link (Go, launchd)", "rel": "holds the link"}, {"label": "store: chats, messages (encrypted bodies), media thumbs", "rel": "local only"}, {"label": "API on tailnet :5480, bearer token, /health", "rel": "serves"}]},
+  {"type": "app", "label": "Laptop · Agent Base", "tone": "agents", "items": [{"label": "node route /api/whatsapp/* (proxy)", "rel": "client"}, {"label": "WhatsApp space (flag), Halo rim style", "rel": "UI"}, {"label": "Rolodex: last contact, counts, no bodies", "rel": "feeds"}]},
+  {"type": "old", "label": "VPS", "tone": "muted", "items": [{"label": "OpenWA gateway: stays off", "rel": "retired path"}, {"label": "12 Sep snapshot (814 chats)", "rel": "reference only"}]}
+ ]},
+ "timeline": {"from": "2026-10-03 01:00", "to": "2026-10-05 12:00", "lanes": [{"id": "you", "label": "you", "tone": "clients"}, {"id": "build", "label": "build", "tone": "agents"}, {"id": "proof", "label": "proof", "tone": "now"}], "events": [
+  {"at": "2026-10-03 01:20", "lane": "build", "label": "phase 1: this memo"},
+  {"at": "2026-10-03 06:00", "lane": "build", "label": "phase 2: gateway on mini, node route, space UI, Rolodex feed (flagged)"},
+  {"at": "2026-10-03 18:00", "lane": "you", "label": "scan one QR from your phone"},
+  {"at": "2026-10-04 18:00", "lane": "proof", "label": "phase 3: 24 h soak, kill/reconnect tests, memory graph, round-trip on a test chat you name"}
+ ]},
+ "quickstart": {"entry": {"path": "SISO_Agency/apps/siso-contact/siso-whatsapp-link"}, "owner": {"name": "WHATSAPP (worker of AGENT-BASE)"}, "verification": "Phase 2 is done when the WhatsApp space in Agent Base lists your chats and groups with unread counts, opens one with its history and thumbnails, and /health on the mini says connected; phase 3 when the 24 h soak graph is flat and the round-trip on your test chat lands both ways.", "commands": ["curl -s -H \"Authorization: Bearer $TOKEN\" http://100.66.34.21:5480/health"]}
+}

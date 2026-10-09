@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.siso.whatsapp-link</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__HOME__/.local/siso-whatsapp-link/siso-whatsapp-link</string>
+    <string>-listen</string><string>__LISTEN__</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>WA_SEND</key><string>0</string>
+    <key>WA_READ_RECEIPTS</key><string>0</string>
+    <key>GOMEMLIMIT</key><string>200MiB</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>ProcessType</key><string>Background</string>
+  <key>StandardOutPath</key><string>__HOME__/Library/Logs/siso-whatsapp-link.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/Library/Logs/siso-whatsapp-link.log</string>
+</dict>
+</plist>

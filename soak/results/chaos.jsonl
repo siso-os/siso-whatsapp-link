@@ -1,0 +1,5 @@
+{"test":"kill9","secs":0,"at":1790966710,"before":"needs_qr","linked":false,"detectedSec":0.0,"undoneSec":null,"backSec":0.6,"backAfterUndoSec":null,"ok":true,"pidChanged":true,"reconnects":0,"after":"needs_qr"}
+{"test":"restart","secs":0,"at":1790966728,"before":"needs_qr","linked":false,"detectedSec":0.1,"undoneSec":null,"backSec":0.6,"backAfterUndoSec":null,"ok":true,"pidChanged":true,"reconnects":0,"after":"needs_qr"}
+{"test":"stall","secs":15,"at":1790966739,"before":"needs_qr","linked":false,"detectedSec":0.0,"undoneSec":15.5,"backSec":15.5,"backAfterUndoSec":0.0,"ok":true,"pidChanged":false,"reconnects":0,"after":"needs_qr"}
+{"test":"netdrop","secs":15,"at":1790966759,"before":"needs_qr","linked":false,"detectedSec":null,"undoneSec":15.5,"backSec":15.5,"backAfterUndoSec":0.0,"ok":true,"pidChanged":false,"reconnects":0,"after":"needs_qr"}
+{"test":"netdrop","secs":15,"at":1790966797,"before":"needs_qr","linked":false,"detectedSec":null,"undoneSec":15.1,"backSec":15.1,"backAfterUndoSec":0.0,"blockVerified":true,"ok":true,"pidChanged":false,"reconnects":0,"after":"needs_qr"}
