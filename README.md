@@ -18,8 +18,61 @@
 </p>
 
 <!-- /siso-os:header -->
-## What it is
 
-Scan a QR code and your agents can read and answer WhatsApp.
+Scan a QR code once, and your agents can read your WhatsApp messages and answer them over a private HTTP API on your own
+Mac. It links as a companion device, the way WhatsApp Desktop does, and keeps the session and the messages on your machine.
 
-It is part of **Agent Base** in [SISO OS](https://github.com/siso-os), the open-source agent operating system we run SISO on. More on [the website](https://www.sisolabs.space/spyder/).
+It is built on [whatsmeow](https://github.com/tulir/whatsmeow) by Tulir Asokan (MPL-2.0), a Go library for WhatsApp's
+multi-device protocol. whatsmeow is not made or endorsed by WhatsApp, so use it with an account you are happy to link and
+within WhatsApp's terms. More on [the website](https://www.sisolabs.space/agent-base/).
+
+## Install
+
+You need macOS and [Go](https://go.dev/dl/) 1.26 or later.
+
+1. **Build it:**
+   ```bash
+   git clone https://github.com/siso-os/siso-whatsapp-link.git
+   cd siso-whatsapp-link
+   go build -o siso-whatsapp-link .
+   ```
+2. **Start it:**
+   ```bash
+   ./siso-whatsapp-link
+   ```
+   It listens on `127.0.0.1:5480` and keeps its data in `~/Library/Application Support/siso-whatsapp-link`, made on first
+   run with a random API token in `api-token` (readable only by you).
+3. **Link your phone:** in a second terminal, ask for a QR code and open it:
+   ```bash
+   T=$(cat ~/Library/Application\ Support/siso-whatsapp-link/api-token)
+   curl -s -X POST -H "Authorization: Bearer $T" http://127.0.0.1:5480/pair
+   sleep 3
+   curl -s -H "Authorization: Bearer $T" http://127.0.0.1:5480/qr \
+     | python3 -c 'import sys,json,base64; d=json.load(sys.stdin); open("qr.png","wb").write(base64.b64decode(d["png"].split(",")[1]))'
+   open qr.png
+   ```
+   On your phone, open WhatsApp > Settings > Linked devices > Link a device, and scan it.
+
+## Use it
+
+Every call except `/healthz` needs the header `Authorization: Bearer $T`.
+
+- `GET /health`: is the link connected, and since when.
+- `GET /chats`: your chats, newest first.
+- `GET /chats/{jid}/messages`: a chat's messages.
+- `GET /search?q=words`: find messages by their text.
+- `GET /events`: a live stream of new-message events (chat and time, never the text).
+- `GET /media/{jid}/{id}`: a message's photo, video or file.
+- `POST /chats/{jid}/send` with `{"text": "..."}`: send a reply. This is off until you start the server with `WA_SEND=1`.
+  Sends are spaced at least 4 seconds apart, and capped at 30 an hour and 150 a day.
+
+## How it works
+
+- **Stays on your Mac:** the session and an SQLite message store live in the data folder. Message text is sealed with
+  AES-256-GCM. Chat names, times and counts stay readable so the lists stay fast.
+- **Quiet by default:** sending and read receipts are off until you set `WA_SEND=1` and `WA_READ_RECEIPTS=1`.
+- **Settings:** `WA_LISTEN` changes the address and `WA_DATA_DIR` the data folder.
+
+## Licence
+
+MIT for our code; see [LICENSE](LICENSE). whatsmeow is MPL-2.0.
