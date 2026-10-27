@@ -154,7 +154,7 @@ const data = {
     { claim: "Break tests time the gateway's own /health from the mini every 0.5 s; the network drop is a pf anchor (com.apple/siso-wa-soak) with a failsafe that lifts it whatever happens.", receipt: "soak/chaos.sh · results/chaos.jsonl" },
   ], limits: ["Message delay is measured against WhatsApp's own send time (1 s resolution, phone clock).", "Laptop-side reachability is not measured: the laptop sleeps and travels; the mini is the always-on side."],
     version: { label: `siso-whatsapp-link ${sha} · gateway ${health.version}`, href: "https://github.com/sisodias/siso-whatsapp-link" } },
-  changes: [{ title: "WhatsApp space in Agent Base", href: "https://github.com/sisodias/siso-internal-labs-agent-base/pull/1", type: "PR", tone: "agents", why: "the soak is the gate before calling it live" },
+  changes: [{ title: "WhatsApp space in Agent Base", href: "https://github.com/siso-os/agent-base", type: "PR", tone: "agents", why: "the soak is the gate before calling it live" },
     { title: "Decision memo WA-1", href: "http://127.0.0.1:8891/card/WHATSAPP-mura7ces/html", type: "U16 decision", tone: "research", why: "whatsmeow on the mini was the pick; this measures it" }],
   quickstart: { entry: { path: "SISO_Agency/apps/siso-contact/siso-whatsapp-link/soak/" }, owner: { name: "WHATSAPP (worker of AGENT-BASE)", last: fmtT(now) },
     verification: "Run the report again and compare the verdict list; rerun a break with soak/chaos.sh.",
