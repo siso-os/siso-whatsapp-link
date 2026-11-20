@@ -33,6 +33,7 @@ type Linker interface {
 	Thumbnail(raw []byte) []byte
 	MarkRead(ctx context.Context, chat string, msgs []Message) error
 	Send(ctx context.Context, chat, text string) (string, error)
+	SendImage(ctx context.Context, chat string, img OutImage, caption string) (string, error)
 	RequestHistory(ctx context.Context, oldest Message) error
 	DisplayName(jid string, stored string) string
 }
@@ -496,9 +497,43 @@ func (l *Link) Send(ctx context.Context, chat, text string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	resp, err := l.cli.SendMessage(ctx, j, &waE2E.Message{Conversation: proto.String(text)})
+	return l.sendKept(ctx, j, &waE2E.Message{Conversation: proto.String(text)})
+}
+
+// SendImage uploads a checked image (media.go) and sends it with its caption.
+func (l *Link) SendImage(ctx context.Context, chat string, img OutImage, caption string) (string, error) {
+	if !l.cfg.SendEnabled {
+		return "", ErrSendDisabled
+	}
+	j, err := types.ParseJID(chat)
 	if err != nil {
 		return "", err
+	}
+	up, err := l.cli.Upload(ctx, img.Data, whatsmeow.MediaImage)
+	if err != nil {
+		return "", fmt.Errorf("upload: %w", err)
+	}
+	return l.sendKept(ctx, j, imageMessage(up, img, caption))
+}
+
+// sendKept sends, then stores the message as his own: WhatsApp does not echo a device's sends back to it, so without
+// this the chat would not show what was sent from here (and an agent could not read back what it posted).
+func (l *Link) sendKept(ctx context.Context, j types.JID, msg *waE2E.Message) (string, error) {
+	resp, err := l.cli.SendMessage(ctx, j, msg)
+	if err != nil {
+		return "", err
+	}
+	ts := resp.Timestamp
+	if ts.IsZero() {
+		ts = time.Now()
+	}
+	info := types.MessageInfo{MessageSource: types.MessageSource{Chat: j, IsFromMe: true, IsGroup: j.Server == types.GroupServer},
+		ID: resp.ID, Timestamp: ts}
+	if l.cli.Store.ID != nil {
+		info.Sender = l.cli.Store.ID.ToNonAD()
+	}
+	if l.put(ctx, &events.Message{Info: info, Message: msg}, true) {
+		l.hub.Publish(Event{Type: "message", Chat: l.canon(ctx, j)})
 	}
 	return resp.ID, nil
 }

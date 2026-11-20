@@ -11,7 +11,12 @@
   <a href="https://github.com/siso-os/siso-whatsapp-link/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/siso-os/siso-whatsapp-link?style=flat-square&color=1a1512"></a>
 </p>
 <p align="center">
-  <a href="https://www.sisolabs.space/agent-base/"><img src=".github/assets/preview.gif" width="820" alt="SISO WhatsApp Link in action"></a>
+  <a href="https://www.sisolabs.space/agent-base/"><img src=".github/assets/hero.webp" width="820" alt="SISO WhatsApp Link in action"></a>
+</p>
+<p align="center">
+  <a href=".github/assets/shot-1.png"><img src=".github/assets/shot-1.png" width="268" alt="SISO WhatsApp Link: screenshot 1"></a>
+  <a href=".github/assets/shot-2.png"><img src=".github/assets/shot-2.png" width="268" alt="SISO WhatsApp Link: screenshot 2"></a>
+  <a href=".github/assets/shot-3.png"><img src=".github/assets/shot-3.png" width="268" alt="SISO WhatsApp Link: screenshot 3"></a>
 </p>
 <p align="center">
   <a href="https://www.sisolabs.space/agent-base/"><b>Website</b></a> · <a href="https://docs.sisolabs.space">Docs</a> · <a href="https://github.com/siso-os">Every SISO OS project</a>
@@ -65,13 +70,31 @@ Every call except `/healthz` needs the header `Authorization: Bearer $T`.
 - `GET /media/{jid}/{id}`: a message's photo, video or file.
 - `POST /chats/{jid}/send` with `{"text": "..."}`: send a reply. This is off until you start the server with `WA_SEND=1`.
   Sends are spaced at least 4 seconds apart, and capped at 30 an hour and 150 a day.
+- `POST /chats/{jid}/send` with `{"image": "<base64>", "caption": "..."}`: send a PNG or JPEG (at most 5 MB and 20
+  megapixels, judged by its bytes) with a caption of up to 1024 characters, under the same switch and limits.
+
+## A narrow token for agents
+
+On first start the server also makes `agent-token` (0600) beside `api-token`. It is for agents you let post in one chat
+only, for example a group you made for them:
+
+- It reaches `GET /health` and, for the chats you list in `WA_AGENT_CHATS` (comma-separated chat ids), only
+  `GET /chats/{jid}/messages` and `POST /chats/{jid}/send`. Everything else, and every other chat, answers 403.
+- Its messages are labelled: the server starts each one (and each image's caption) with `SISO agent: `, so no one
+  mistakes them for you typing.
+- It still needs `WA_SEND=1`, and it is capped at 20 sends a day on top of the limits above.
+
+`deploy/bind-agent-chat.sh "<exact group name>"` finds the group by its exact name and sets `WA_AGENT_CHATS`;
+`cli/siso-wa.mjs` (`siso-wa health`, `siso-wa post "<text>"`, `siso-wa post --image FILE --caption "<text>"`,
+`siso-wa read`) is a small client for it.
 
 ## How it works
 
 - **Stays on your Mac:** the session and an SQLite message store live in the data folder. Message text is sealed with
   AES-256-GCM. Chat names, times and counts stay readable so the lists stay fast.
 - **Quiet by default:** sending and read receipts are off until you set `WA_SEND=1` and `WA_READ_RECEIPTS=1`.
-- **Settings:** `WA_LISTEN` changes the address and `WA_DATA_DIR` the data folder.
+- **Settings:** `WA_LISTEN` changes the address, `WA_DATA_DIR` the data folder, and `WA_AGENT_CHATS` the chats the
+  agent token may use.
 
 ## Licence
 

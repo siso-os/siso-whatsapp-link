@@ -19,9 +19,16 @@ import (
 
 type fakeLink struct {
 	sent   []string
+	texts  []string
+	images []fakeImage
 	reads  int
 	status LinkStatus
 	mu     sync.Mutex
+}
+
+type fakeImage struct {
+	chat, caption string
+	img           OutImage
 }
 
 func (f *fakeLink) Status() LinkStatus {
@@ -47,7 +54,13 @@ func (f *fakeLink) MarkRead(ctx context.Context, chat string, msgs []Message) er
 }
 func (f *fakeLink) Send(ctx context.Context, chat, text string) (string, error) {
 	f.sent = append(f.sent, chat)
+	f.texts = append(f.texts, text)
 	return "SENT1", nil
+}
+func (f *fakeLink) SendImage(ctx context.Context, chat string, img OutImage, caption string) (string, error) {
+	f.sent = append(f.sent, chat)
+	f.images = append(f.images, fakeImage{chat, caption, img})
+	return "IMG1", nil
 }
 func (f *fakeLink) RequestHistory(ctx context.Context, oldest Message) error { return nil }
 func (f *fakeLink) DisplayName(jid, stored string) string                    { return stored }
@@ -56,10 +69,17 @@ const (
 	alice = "100000000001@s.whatsapp.net"
 	bob   = "100000000002@s.whatsapp.net"
 	grp   = "120000000000000001@g.us"
+	grp2  = "120000000000000002@g.us"
 	tok   = "test-token"
+	atok  = "test-agent-token"
 )
 
 func setup(t *testing.T, send bool) (*Store, *fakeLink, http.Handler, string) {
+	t.Helper()
+	return setupCfg(t, Config{Token: tok, SendEnabled: send})
+}
+
+func setupCfg(t *testing.T, cfg Config) (*Store, *fakeLink, http.Handler, string) {
 	t.Helper()
 	dir := t.TempDir()
 	st, err := OpenStore(filepath.Join(dir, "messages.db"), bytes.Repeat([]byte{7}, 32))
@@ -68,7 +88,6 @@ func setup(t *testing.T, send bool) (*Store, *fakeLink, http.Handler, string) {
 	}
 	t.Cleanup(func() { st.Close() })
 	fl := &fakeLink{status: LinkStatus{State: "connected"}}
-	cfg := Config{Token: tok, SendEnabled: send}
 	return st, fl, NewAPI(cfg, st, fl, NewHub()).Handler(), dir
 }
 
@@ -278,5 +297,222 @@ func TestLogShapeHidesIDs(t *testing.T) {
 	}
 	if got := pathShape("/media/" + grp + "/ABCDEF/thumb"); strings.Contains(got, "ABCDEF") || strings.Contains(got, "1200") {
 		t.Errorf("media path leaks ids: %s", got)
+	}
+}
+
+// The agent token: /health, and read + send in WA_AGENT_CHATS only. Everything else is 403, sends carry the label,
+// and it has its own 20-a-day ceiling. The API token keeps every route.
+
+func setupAgent(t *testing.T, send bool, chats ...string) (*Store, *fakeLink, http.Handler) {
+	t.Helper()
+	st, fl, h, _ := setupCfg(t, Config{Token: tok, AgentToken: atok, AgentChats: chats, SendEnabled: send})
+	seed(t, st)
+	st.UpsertChat(Chat{JID: grp2, Name: "Fixture Agent Group", IsGroup: true})
+	st.PutMessage(Message{ChatJID: grp2, ID: "h1", Sender: bob, TS: 600, Kind: "text", Text: "a reply from the fixture"}, true)
+	return st, fl, h
+}
+
+func TestAgentTokenRefusedOutsideItsChat(t *testing.T) {
+	_, fl, h := setupAgent(t, true, grp2)
+	for _, c := range []struct{ method, path, body string }{
+		{"GET", "/chats", ""},
+		{"GET", "/chats?archived=1", ""},
+		{"GET", "/search?q=banana", ""},
+		{"GET", "/search?q=x&chat=" + grp2, ""},
+		{"GET", "/rolodex", ""},
+		{"GET", "/media/" + grp + "/g1", ""},
+		{"GET", "/media/" + grp2 + "/h1", ""},
+		{"GET", "/media/" + grp2 + "/h1/thumb", ""},
+		{"GET", "/events", ""},
+		{"GET", "/soak", ""},
+		{"GET", "/qr", ""},
+		{"POST", "/pair", ""},
+		{"GET", "/chats/" + alice + "/messages", ""},
+		{"GET", "/chats/" + grp + "/messages", ""},
+		{"POST", "/chats/" + alice + "/send", `{"text":"hi"}`},
+		{"POST", "/chats/" + grp + "/send", `{"text":"hi"}`},
+		{"POST", "/chats/0@s.whatsapp.net/send", `{"text":"x"}`},
+		{"POST", "/chats/120000000000000002%2540g.us.x/send", `{"text":"x"}`},
+		{"POST", "/chats/" + grp2 + "/read", ""},
+		{"GET", "/chats/" + grp2 + "/send", ""}, // wrong method
+		{"POST", "/chats/" + grp2 + "/messages", ""},
+		{"GET", "/chats/" + grp2 + "/messages/", ""}, // would redirect
+		{"GET", "/chats//" + grp2 + "/messages", ""},
+		{"GET", "/health/", ""},
+		{"GET", "/nope", ""},
+	} {
+		if w := do(h, c.method, c.path, atok, c.body); w.Code != 403 {
+			t.Errorf("agent %s %s: %d, want 403", c.method, c.path, w.Code)
+		} else if strings.Contains(w.Body.String(), "fixture") || strings.Contains(w.Body.String(), "Banana") {
+			t.Errorf("agent %s %s: 403 body leaked data: %s", c.method, c.path, w.Body)
+		}
+	}
+	if len(fl.sent) != 0 {
+		t.Errorf("agent token sent %d messages outside its chat", len(fl.sent))
+	}
+}
+
+func TestAgentTokenNoChatsBound(t *testing.T) {
+	_, fl, h := setupAgent(t, true) // WA_AGENT_CHATS empty: no chat is the agent's
+	if w := do(h, "POST", "/chats/"+grp2+"/send", atok, `{"text":"x"}`); w.Code != 403 {
+		t.Errorf("send with no agent chat bound: %d", w.Code)
+	}
+	if w := do(h, "GET", "/chats/"+grp2+"/messages", atok, ""); w.Code != 403 {
+		t.Errorf("read with no agent chat bound: %d", w.Code)
+	}
+	if len(fl.sent) != 0 {
+		t.Error("sent with no agent chat bound")
+	}
+	w := do(h, "GET", "/health", atok, "")
+	var out struct{ AgentChats []string }
+	json.Unmarshal(w.Body.Bytes(), &out)
+	if w.Code != 200 || out.AgentChats == nil || len(out.AgentChats) != 0 {
+		t.Errorf("health shows no agent chat as []: %d %s", w.Code, w.Body)
+	}
+}
+
+func TestAgentTokenInItsChat(t *testing.T) {
+	st, fl, h := setupAgent(t, true, grp2)
+	w := do(h, "GET", "/health", atok, "")
+	var hl struct {
+		AgentChats      []string
+		AgentSendsDay   int
+		AgentSendPerDay int
+	}
+	json.Unmarshal(w.Body.Bytes(), &hl)
+	if w.Code != 200 || len(hl.AgentChats) != 1 || hl.AgentChats[0] != grp2 || hl.AgentSendPerDay != 20 {
+		t.Fatalf("agent health: %d %s", w.Code, w.Body)
+	}
+	w = do(h, "GET", "/chats/"+grp2+"/messages?limit=10", atok, "")
+	var ms struct{ Messages []Message }
+	json.Unmarshal(w.Body.Bytes(), &ms)
+	if w.Code != 200 || len(ms.Messages) != 1 || ms.Messages[0].Text != "a reply from the fixture" {
+		t.Fatalf("agent reads its chat: %d %+v", w.Code, ms.Messages)
+	}
+	// An escaped @ is the same chat to the gate and to the handler.
+	if w := do(h, "GET", "/chats/120000000000000002%40g.us/messages", atok, ""); w.Code != 200 {
+		t.Errorf("escaped jid of the agent chat: %d", w.Code)
+	}
+	w = do(h, "POST", "/chats/"+grp2+"/send", atok, `{"text":"build is green"}`)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "SENT1") {
+		t.Fatalf("agent send: %d %s", w.Code, w.Body)
+	}
+	if len(fl.texts) != 1 || fl.texts[0] != "SISO agent: build is green" || fl.sent[0] != grp2 {
+		t.Fatalf("agent send must carry the label: %q to %v", fl.texts, fl.sent)
+	}
+	// Already labelled: not labelled twice.
+	st.db.Exec(`UPDATE sends SET ts=ts-10`)
+	if w := do(h, "POST", "/chats/"+grp2+"/send", atok, `{"text":"  SISO agent: done"}`); w.Code != 200 {
+		t.Fatalf("second agent send: %d %s", w.Code, w.Body)
+	}
+	if fl.texts[1] != "SISO agent: done" {
+		t.Errorf("double label: %q", fl.texts[1])
+	}
+	// The label alone is not a message.
+	st.db.Exec(`UPDATE sends SET ts=ts-10`)
+	if w := do(h, "POST", "/chats/"+grp2+"/send", atok, `{"text":"SISO agent:  "}`); w.Code != 400 {
+		t.Errorf("label-only text: %d", w.Code)
+	}
+	// The ledger marks agent sends; the API token's do not count against the agent ceiling.
+	if n := st.AgentSendsSince(time.Now().Add(-time.Hour)); n != 2 {
+		t.Errorf("agent sends in ledger: %d, want 2", n)
+	}
+	st.db.Exec(`UPDATE sends SET ts=ts-10`)
+	if w := do(h, "POST", "/chats/"+grp2+"/send", tok, `{"text":"from Shaan"}`); w.Code != 200 {
+		t.Fatalf("main send to the agent chat: %d", w.Code)
+	}
+	if fl.texts[2] != "from Shaan" {
+		t.Errorf("main token text must stay as written: %q", fl.texts[2])
+	}
+	if n := st.AgentSendsSince(time.Now().Add(-time.Hour)); n != 2 {
+		t.Errorf("main send counted as agent: %d", n)
+	}
+}
+
+func TestAgentSendNeedsSendOn(t *testing.T) {
+	_, fl, h := setupAgent(t, false, grp2)
+	if w := do(h, "POST", "/chats/"+grp2+"/send", atok, `{"text":"x"}`); w.Code != 403 || len(fl.sent) != 0 {
+		t.Errorf("agent send with WA_SEND=0: %d sent=%d", w.Code, len(fl.sent))
+	}
+}
+
+func TestAgentDailyCap(t *testing.T) {
+	st, fl, h := setupAgent(t, true, grp2)
+	// 19 agent sends earlier today (outside the hour window and the 4 s gap): one left.
+	for i := 0; i < agentSendPerDay-1; i++ {
+		st.db.Exec(`INSERT INTO sends (ts,chat,id,ok,agent) VALUES (?,?,?,1,1)`, time.Now().Add(-3*time.Hour).Unix(), grp2, "x")
+	}
+	if w := do(h, "POST", "/chats/"+grp2+"/send", atok, `{"text":"twentieth"}`); w.Code != 200 {
+		t.Fatalf("20th agent send: %d %s", w.Code, w.Body)
+	}
+	st.db.Exec(`UPDATE sends SET ts=ts-10 WHERE id='SENT1'`)
+	if w := do(h, "POST", "/chats/"+grp2+"/send", atok, `{"text":"twenty-first"}`); w.Code != 429 {
+		t.Errorf("21st agent send: %d, want 429", w.Code)
+	}
+	if len(fl.sent) != 1 {
+		t.Errorf("sent %d, want 1", len(fl.sent))
+	}
+	// The API token is not held by the agent ceiling.
+	if w := do(h, "POST", "/chats/"+grp2+"/send", tok, `{"text":"main"}`); w.Code != 200 {
+		t.Errorf("main token after agent cap: %d", w.Code)
+	}
+	// Yesterday's agent sends fall out of the window.
+	st.db.Exec(`UPDATE sends SET ts=ts-86400 WHERE agent=1`)
+	st.db.Exec(`UPDATE sends SET ts=ts-10`)
+	if w := do(h, "POST", "/chats/"+grp2+"/send", atok, `{"text":"next day"}`); w.Code != 200 {
+		t.Errorf("agent send after the window: %d", w.Code)
+	}
+}
+
+func TestMainTokenUnchangedWithAgentToken(t *testing.T) {
+	_, fl, h := setupAgent(t, true, grp2)
+	for _, p := range []string{"/health", "/chats", "/rolodex", "/search?q=x", "/soak", "/qr", "/chats/" + alice + "/messages", "/chats/" + grp2 + "/messages"} {
+		if w := do(h, "GET", p, tok, ""); w.Code != 200 {
+			t.Errorf("main %s: %d", p, w.Code)
+		}
+	}
+	if w := do(h, "POST", "/chats/"+alice+"/send", tok, `{"text":"hi"}`); w.Code != 200 || fl.texts[0] != "hi" {
+		t.Errorf("main send to any chat he has, unlabelled: %d %q", w.Code, fl.texts)
+	}
+	if w := do(h, "GET", "/nope", tok, ""); w.Code != 404 {
+		t.Errorf("main unknown route stays 404: %d", w.Code)
+	}
+	// An empty agent token never matches an empty bearer.
+	_, _, h2, _ := setupCfg(t, Config{Token: tok})
+	r := httptest.NewRequest("GET", "/health", nil)
+	r.Header.Set("Authorization", "Bearer ")
+	w := httptest.NewRecorder()
+	h2.ServeHTTP(w, r)
+	if w.Code != 401 {
+		t.Errorf("empty bearer with no agent token: %d", w.Code)
+	}
+}
+
+func TestAgentLedgerColumnMigrates(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "messages.db")
+	// A 0.2 store: the sends table without the agent column, holding one send.
+	st, err := OpenStore(p, bytes.Repeat([]byte{7}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.db.Exec(`DROP TABLE sends`)
+	st.db.Exec(`CREATE TABLE sends (ts INTEGER NOT NULL, chat TEXT NOT NULL, id TEXT NOT NULL, ok INTEGER NOT NULL)`)
+	st.db.Exec(`INSERT INTO sends VALUES (?,?,?,1)`, time.Now().Unix(), alice, "old")
+	st.Close()
+	st, err = OpenStore(p, bytes.Repeat([]byte{7}, 32))
+	if err != nil {
+		t.Fatalf("reopen migrates: %v", err)
+	}
+	defer st.Close()
+	if n, _ := st.SendsSince(time.Now().Add(-time.Hour)); n != 1 {
+		t.Errorf("old send kept: %d", n)
+	}
+	if st.AgentSendsSince(time.Now().Add(-time.Hour)) != 0 {
+		t.Error("old send counted as agent")
+	}
+	st.LogSend(grp2, "new", true, true)
+	if st.AgentSendsSince(time.Now().Add(-time.Hour)) != 1 {
+		t.Error("agent send not marked")
 	}
 }

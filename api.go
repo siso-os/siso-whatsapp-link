@@ -1,12 +1,19 @@
 package main
 
-// The HTTP API Agent Base's node reads over the tailnet. Every route needs the bearer token; there is no
+// The HTTP API Agent Base's node reads over the tailnet. Every route needs a bearer token; there is no
 // anonymous route but /healthz (a liveness bit, no data). Responses carry message text to the app only;
 // the access log records method, path shape, status and time, never a query string or a body.
+//
+// Two tokens. The API token (api-token) reaches every route. The agent token (agent-token) is for SISO agents and
+// reaches only GET /health and, for the chats in WA_AGENT_CHATS, GET /chats/{jid}/messages and
+// POST /chats/{jid}/send (text, or an image with a caption); everything else answers 403. Its sends (an image's
+// caption too) are labelled "SISO agent: " and capped at 20 a day.
+// Shaan, 16 Nov 2026: agents post only in the agent group, labelled, so no one mistakes them for him typing.
 
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,11 +22,13 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	qrcode "github.com/skip2/go-qrcode"
 )
@@ -39,33 +48,95 @@ func NewAPI(cfg Config, st *Store, link Linker, hub *Hub) *API {
 	return &API{st: st, link: link, hub: hub, cfg: cfg, started: time.Now(), histAt: map[string]time.Time{}}
 }
 
+// agentScope is what the agent token may do on a route. A route not marked is API-token only.
+type agentScope int
+
+const (
+	agentNone agentScope = iota // API token only
+	agentAny                    // the agent token may call it (no chat in the path)
+	agentChat                   // the agent token may call it for a chat in WA_AGENT_CHATS only
+)
+
+type role int
+
+const (
+	roleMain role = iota + 1
+	roleAgent
+)
+
+type roleKey struct{}
+
+func roleOf(r *http.Request) role { v, _ := r.Context().Value(roleKey{}).(role); return v }
+
 func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
+	handle := func(pattern string, h http.HandlerFunc, scope agentScope) { mux.Handle(pattern, a.gate(scope, h)) }
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok\n")) })
-	mux.HandleFunc("GET /health", a.health)
-	mux.HandleFunc("GET /qr", a.qr)
-	mux.HandleFunc("POST /pair", a.pair)
-	mux.HandleFunc("GET /chats", a.chats)
-	mux.HandleFunc("GET /chats/{jid}/messages", a.messages)
-	mux.HandleFunc("POST /chats/{jid}/read", a.read)
-	mux.HandleFunc("POST /chats/{jid}/send", a.send)
-	mux.HandleFunc("GET /media/{jid}/{id}/thumb", a.thumb)
-	mux.HandleFunc("GET /media/{jid}/{id}", a.media)
-	mux.HandleFunc("GET /search", a.search)
-	mux.HandleFunc("GET /rolodex", a.rolodex)
-	mux.HandleFunc("GET /events", a.events)
-	mux.HandleFunc("GET /soak", a.soakRows)
+	handle("GET /health", a.health, agentAny)
+	handle("GET /qr", a.qr, agentNone)
+	handle("POST /pair", a.pair, agentNone)
+	handle("GET /chats", a.chats, agentNone)
+	handle("GET /chats/{jid}/messages", a.messages, agentChat)
+	handle("POST /chats/{jid}/read", a.read, agentNone)
+	handle("POST /chats/{jid}/send", a.send, agentChat)
+	handle("GET /media/{jid}/{id}/thumb", a.thumb, agentNone)
+	handle("GET /media/{jid}/{id}", a.media, agentNone)
+	handle("GET /search", a.search, agentNone)
+	handle("GET /rolodex", a.rolodex, agentNone)
+	handle("GET /events", a.events, agentNone)
+	handle("GET /soak", a.soakRows, agentNone)
 	return a.logged(a.auth(mux))
 }
 
-func (a *API) auth(next http.Handler) http.Handler {
-	want := []byte("Bearer " + a.cfg.Token)
+var errAgentScope = map[string]string{"error": "forbidden: the agent token reaches only /health and the agent chat"}
+
+// gate runs after routing, so the chat it checks is exactly the one the handler will use (jidParam).
+func (a *API) gate(scope agentScope, h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/healthz" && subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), want) != 1 {
+		if roleOf(r) == roleAgent && (scope == agentNone || (scope == agentChat && !a.isAgentChat(jidParam(r)))) {
+			writeJSON(w, 403, errAgentScope)
+			return
+		}
+		h(w, r)
+	})
+}
+
+func (a *API) isAgentChat(jid string) bool {
+	if jid == "" {
+		return false
+	}
+	for _, c := range a.cfg.AgentChats {
+		if c == jid {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *API) auth(mux *http.ServeMux) http.Handler {
+	want := []byte("Bearer " + a.cfg.Token)
+	wantAgent := []byte("Bearer " + a.cfg.AgentToken)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			mux.ServeHTTP(w, r)
+			return
+		}
+		got := []byte(r.Header.Get("Authorization"))
+		switch {
+		case subtle.ConstantTimeCompare(got, want) == 1:
+			r = r.WithContext(context.WithValue(r.Context(), roleKey{}, roleMain))
+		case a.cfg.AgentToken != "" && subtle.ConstantTimeCompare(got, wantAgent) == 1:
+			// No route, a wrong method, or a path the mux would redirect: 403 too, never a 404/405/301 hint.
+			if _, pat := mux.Handler(r); pat == "" || path.Clean(r.URL.Path) != r.URL.Path {
+				writeJSON(w, 403, errAgentScope)
+				return
+			}
+			r = r.WithContext(context.WithValue(r.Context(), roleKey{}, roleAgent))
+		default:
 			writeJSON(w, 401, map[string]string{"error": "unauthorized"})
 			return
 		}
-		next.ServeHTTP(w, r)
+		mux.ServeHTTP(w, r)
 	})
 }
 
@@ -139,9 +210,15 @@ func rssMB() int {
 
 func (a *API) health(w http.ResponseWriter, r *http.Request) {
 	s := a.link.Status()
+	agentChats := a.cfg.AgentChats
+	if agentChats == nil {
+		agentChats = []string{}
+	}
 	writeJSON(w, 200, map[string]any{
 		"link": s, "counts": a.st.Counts(), "uptimeSec": int(time.Since(a.started).Seconds()), "rssMB": rssMB(),
 		"sendEnabled": a.cfg.SendEnabled, "readReceipts": a.cfg.ReadReceipts, "version": version,
+		"agentChats": agentChats, "agentSendsDay": a.st.AgentSendsSince(time.Now().Add(-24 * time.Hour)),
+		"agentSendPerDay": agentSendPerDay,
 	})
 }
 
@@ -243,26 +320,89 @@ func (a *API) read(w http.ResponseWriter, r *http.Request) {
 }
 
 // Human pace: one send at a time, at least MinGap apart, and hourly and daily ceilings. No bulk, ever.
+// The agent token has its own daily ceiling on top, and its text always carries the label.
 const (
-	sendMinGap   = 4 * time.Second
-	sendPerHour  = 30
-	sendPerDay   = 150
-	sendMaxChars = 4000
+	sendMinGap      = 4 * time.Second
+	sendPerHour     = 30
+	sendPerDay      = 150
+	sendMaxChars    = 4000
+	agentSendPerDay = 20
+	agentPrefix     = "SISO agent: "
+	sendBodyMax     = imageMaxBytes*4/3 + 64<<10 // a 5 MB image in base64, plus its caption
 )
 
 var sendMu sync.Mutex
 
+// agentLabel makes sure an agent's message says it is an agent's, once.
+func agentLabel(text string) string {
+	text = strings.TrimLeft(text, " \t\r\n")
+	if strings.HasPrefix(text, agentPrefix) {
+		return text
+	}
+	return agentPrefix + text
+}
+
+// send posts one message: {"text"} or {"image": base64 PNG/JPEG, "caption"}. Both go through the same gate, label,
+// ceilings and ledger; an agent's caption carries the label as its text does.
 func (a *API) send(w http.ResponseWriter, r *http.Request) {
 	if !a.cfg.SendEnabled {
 		writeJSON(w, 403, map[string]string{"error": ErrSendDisabled.Error()})
 		return
 	}
+	agent := roleOf(r) == roleAgent
 	var body struct {
-		Text string `json:"text"`
+		Text    string `json:"text"`
+		Image   string `json:"image"`
+		Caption string `json:"caption"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&body); err != nil || strings.TrimSpace(body.Text) == "" || len(body.Text) > sendMaxChars {
-		writeJSON(w, 400, map[string]string{"error": "text required (max 4000 chars)"})
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, sendBodyMax)).Decode(&body); err != nil {
+		code, msg := 400, "body must be JSON: {\"text\"} or {\"image\", \"caption\"}"
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			code, msg = 413, errImageLarge.Error()
+		}
+		writeJSON(w, code, map[string]string{"error": msg})
 		return
+	}
+	var img *OutImage
+	text := body.Text
+	if body.Image != "" {
+		if body.Text != "" {
+			writeJSON(w, 400, map[string]string{"error": "send text or an image with a caption, not both"})
+			return
+		}
+		raw, err := base64.StdEncoding.DecodeString(body.Image)
+		if err != nil {
+			writeJSON(w, 400, map[string]string{"error": "image must be base64 (standard alphabet)"})
+			return
+		}
+		checked, err := checkImage(raw)
+		if err != nil {
+			code := 415
+			if errors.Is(err, errImageLarge) || errors.Is(err, errImagePix) {
+				code = 413
+			}
+			writeJSON(w, code, map[string]string{"error": err.Error()})
+			return
+		}
+		img, text = &checked, body.Caption
+		if agent {
+			text = strings.TrimRight(agentLabel(text), " ") // an image with no caption still says who sent it
+		}
+		if utf8.RuneCountInString(text) > imageCaptionMax {
+			writeJSON(w, 400, map[string]string{"error": fmt.Sprintf("caption too long (max %d characters)", imageCaptionMax)})
+			return
+		}
+	} else {
+		bare := text
+		if agent {
+			text = agentLabel(text)
+			bare = strings.TrimPrefix(text, agentPrefix) // the label alone is not a message
+		}
+		if strings.TrimSpace(bare) == "" || len(text) > sendMaxChars {
+			writeJSON(w, 400, map[string]string{"error": "text required (max 4000 chars)"})
+			return
+		}
 	}
 	jid := jidParam(r)
 	if _, ok := a.st.Chat(jid); !ok {
@@ -281,10 +421,22 @@ func (a *API) send(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 429, map[string]string{"error": "send ceiling reached"})
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
-	defer cancel()
-	id, err := a.link.Send(ctx, jid, body.Text)
-	a.st.LogSend(jid, id, err == nil)
+	if agent && a.st.AgentSendsSince(time.Now().Add(-24*time.Hour)) >= agentSendPerDay {
+		writeJSON(w, 429, map[string]string{"error": "agent send ceiling reached (20 a day)"})
+		return
+	}
+	var id string
+	var err error
+	if img != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second) // the upload comes first
+		defer cancel()
+		id, err = a.link.SendImage(ctx, jid, *img, text)
+	} else {
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		id, err = a.link.Send(ctx, jid, text)
+	}
+	a.st.LogSend(jid, id, err == nil, agent)
 	if err != nil {
 		code := 502
 		if errors.Is(err, ErrSendDisabled) {

@@ -25,12 +25,14 @@ import (
 	"time"
 )
 
-const version = "0.2.0"
+const version = "0.4.0"
 
 type Config struct {
 	DataDir      string
 	Listen       []string
 	Token        string
+	AgentToken   string   // the narrow token: /health, and read+send in AgentChats only (api.go agentScope)
+	AgentChats   []string // WA_AGENT_CHATS: the chats the agent token may read and post in (exact jids)
 	SendEnabled  bool
 	ReadReceipts bool
 	MemLimitMB   int
@@ -67,6 +69,17 @@ func secret(dataDir, service, file string) (string, error) {
 	}
 	v := newHex()
 	return v, os.WriteFile(p, []byte(v+"\n"), 0o600)
+}
+
+// splitList turns "a, b,,c" into [a b c]: trimmed, no empties, never nil.
+func splitList(v string) []string {
+	out := []string{}
+	for _, s := range strings.Split(v, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func newHex() string {
@@ -132,7 +145,7 @@ func main() {
 	}
 	os.Chmod(cfg.DataDir, 0o700)
 	if *printToken {
-		log.Printf("token: %s/api-token (0600)", cfg.DataDir)
+		log.Printf("token: %s/api-token (0600); agent token: %s/agent-token (0600)", cfg.DataDir, cfg.DataDir)
 		return
 	}
 	debug.SetMemoryLimit(int64(cfg.MemLimitMB) << 20)
@@ -144,6 +157,17 @@ func main() {
 		log.Fatal("token: ", err)
 	}
 	cfg.Token = tok
+	// The agent token is a second, narrower credential (agents post only in the agent group, labelled). Same 0600
+	// file shape beside api-token, made on first start.
+	agentTok, err := secret(cfg.DataDir, "", "agent-token")
+	if err != nil {
+		log.Fatal("agent token: ", err)
+	}
+	if agentTok == tok {
+		log.Fatal("agent token: equals the API token; remove agent-token and restart")
+	}
+	cfg.AgentToken = agentTok
+	cfg.AgentChats = splitList(env("WA_AGENT_CHATS", ""))
 	keyHex, err := secret(cfg.DataDir, "siso-whatsapp-link-body-key", "body-key")
 	if err != nil {
 		log.Fatal("body key: ", err)
@@ -192,7 +216,7 @@ func main() {
 		}()
 	}
 	go watchdog(ctx, cfg, link, stop)
-	log.Printf("siso-whatsapp-link %s up (send=%v receipts=%v)", version, cfg.SendEnabled, cfg.ReadReceipts)
+	log.Printf("siso-whatsapp-link %s up (send=%v receipts=%v agentChats=%d)", version, cfg.SendEnabled, cfg.ReadReceipts, len(cfg.AgentChats))
 	<-ctx.Done()
 	log.Printf("shutting down")
 	select { // let the recorder write its stop row before the store closes
