@@ -29,24 +29,61 @@ tailnet and shows the WhatsApp space; the Rolodex reads `/rolodex` (counts and d
 | File | Holds |
 |---|---|
 | `main.go` | config, secrets (Keychain, else 0600 files), listeners, the watchdog (restart on RSS > 600 MB or 15 min down) |
-| `link.go` | the whatsmeow client: pairing, events → store, LID → phone-number chat ids, media, mark-read, send |
+| `link.go` | the whatsmeow client: pairing, events → store, LID → phone-number chat ids, media, mark-read, send (text and image; a sent message is stored as his own, since WhatsApp does not echo it back) |
+| `media.go` | outgoing images: PNG or JPEG by their bytes, max 5 MB and 20 megapixels, decoded whole; the ImageMessage from whatsmeow's `Upload`, with a 96 px JPEG thumbnail |
 | `store.go` | SQLite `messages.db`: chats, messages (text and raw proto sealed with AES-GCM), send ledger |
 | `api.go` | the HTTP API (bearer token on every route but `/healthz`) |
 | `soak.go` | the flight recorder: `soak.csv` in the data dir, one row a minute plus every state change (numbers only) |
 | `soak/` | `chaos.sh` (kill -9, restart, freeze, pf network drop on the mini, timed back to steady; results in `results/chaos.jsonl`) and `report.mjs` (acceptance checks + memory/state graph, U19 page, `--post` to console card WHATSAPP-soak) |
+| `cli/siso-wa.mjs` | the laptop CLI agents use to post in (and read) the one agent group; installed as `~/.local/bin/siso-wa`; test `node --test cli/siso-wa.test.mjs` |
+| `deploy/` | `install-mini.sh` (build, install, reload; carries the live switches), `bind-agent-chat.sh` (bind the agent group by exact name), `agent-env.sh` (copy the agent token to a laptop) |
 
 API: `GET /health` · `GET /qr` · `POST /pair` · `GET /chats[?archived=1]` · `GET /chats/{jid}/messages?before=&limit=` ·
-`POST /chats/{jid}/read` · `POST /chats/{jid}/send` · `GET /media/{jid}/{id}[/thumb]` · `GET /search?q=[&chat=]` ·
+`POST /chats/{jid}/read` · `POST /chats/{jid}/send` (`{"text"}`, or `{"image": base64 PNG/JPEG, "caption"}`) · `GET /media/{jid}/{id}[/thumb]` · `GET /search?q=[&chat=]` ·
 `GET /rolodex` · `GET /events` (SSE pings: chat ids only) · `GET /soak?since=` (recorder rows).
 
 Data on the mini: `~/Library/Application Support/siso-whatsapp-link/` (`session.db` = the link itself, `messages.db`),
 API token in `api-token` (0600; the laptop copies it into its own Keychain as `siso-whatsapp-link-token`, account `siso`),
+agent token in `agent-token` (0600, made on first start of 0.3; see below),
 body key in the mini's login Keychain (`siso-whatsapp-link-body-key`, account `siso`; ssh sessions cannot read it).
+
+## The agent chat (agents post here, and only here)
+
+Shaan, 16 Nov 2026: "you keep on asking me to send Eric something should it be better if I just make a GC and you're
+allowed to post in that GC and then you could just message him from my WhatsApp on my laptop or the Mac Mini."
+Agent Zero's ruling: yes, through this gateway, with the limit to that one chat enforced here (not trusted to the agent),
+and every agent message visibly labelled so Eric never mistakes it for Shaan typing.
+
+- **The agent token** (`agent-token`, beside `api-token`) reaches only `GET /health` and, for the chats listed in
+  `WA_AGENT_CHATS` (comma-separated jids in the launchd plist), `GET /chats/{jid}/messages` and `POST /chats/{jid}/send`.
+  Every other route, and every other chat, answers 403. The API token keeps every route, as before.
+- **Agent sends** need `WA_SEND=1` and a listed chat. The gateway prefixes the text, or an image's caption, with
+  `SISO agent: ` (unless it already starts with it; an image with no caption still says `SISO agent:`), caps agent sends at 20 a rolling day on top of the 4 s / 30 an hour / 150 a day limits, and marks each
+  one in the send ledger (`sends.agent=1`; chat id and message id, never the text). `/health` shows `agentChats`,
+  `agentSendsDay` and `agentSendPerDay`.
+- **Bind the group** once Shaan has made it (named exactly `SISO × Đông A`):
+  `WA_HOST=shaans-mac-mini deploy/bind-agent-chat.sh "SISO × Đông A"` (add `--dry-run` to look only). It matches the name
+  exactly on the mini, prints only `<jid> <name>` for that one group, fails on none or several, writes `WA_AGENT_CHATS`
+  into the plist, reloads the job and checks `/healthz`.
+- **Images** (0.4): `{"image": "<base64>", "caption": "..."}` on the same route, so the same gate, label, ceilings and
+  ledger apply. PNG or JPEG only, judged by the bytes (a GIF, an SVG or a truncated file answers 415), at most 5 MB and
+  20 megapixels (413), caption at most 1024 characters (400). Shaan, 19 Nov 2026: "send the different paragraphs with
+  the screenshots".
+- **Agents use `siso-wa`** on the laptop: `siso-wa health`, `siso-wa post "<text>"` (prints the message id),
+  `siso-wa post --image FILE [--caption TEXT]` (checks type and size before it sends),
+  `siso-wa read [--limit N]` (Eric's replies). It reads `WA_URL` and `WA_AGENT_TOKEN` from
+  `~/.config/siso-secrets/whatsapp-agent.env` (0600, written by `deploy/agent-env.sh`). With no chat bound it says
+  "no agent chat bound yet: run deploy/bind-agent-chat.sh" and exits 2.
+- **Deploys keep the switches:** `deploy/install-mini.sh` copies the running job's `WA_SEND`, `WA_READ_RECEIPTS` and
+  `WA_AGENT_CHATS` into the new plist unless you set one yourself, so a deploy never silently flips sending.
 
 ## Rules (Shaan's and AGENT-BASE's)
 
 - Never log, print, commit or report message bodies or contact numbers. Tests use fixtures; reports use counts.
-- Sending (`WA_SEND=1`) and read receipts (`WA_READ_RECEIPTS=1`) are **off**. They turn on only when Shaan says so; even
-  then a send is one message he wrote or approved, rate-limited (4 s apart, 30/h, 150/day), to a chat he already has.
+- Read receipts (`WA_READ_RECEIPTS=1`) are **off**; they turn on only when Shaan says so. Sending (`WA_SEND=1`) is on in
+  the live job by his hand; with the API token a send is one message he wrote or approved, rate-limited (4 s apart,
+  30/h, 150/day), to a chat he already has.
+- Agents post only in the agent group, with the agent token (`siso-wa`), labelled `SISO agent: `, at most 20 a day.
+  Never with the API token, never to any other chat, never as if Shaan typed it.
 - No status reads: status broadcasts and newsletters are dropped at the door.
 - Linking is his QR scan, nothing before it. The old OpenWA gateway on siso-vps stays off; its key is compromised.

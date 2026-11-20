@@ -97,6 +97,15 @@ func OpenStore(path string, key []byte) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("schema: %w", err)
 	}
+	// 0.3: the ledger marks sends made with the agent token (they have their own daily cap). Additive, so an older
+	// binary still reads and writes the table.
+	var hasAgent int
+	db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('sends') WHERE name='agent'`).Scan(&hasAgent)
+	if hasAgent == 0 {
+		if _, err := db.Exec(`ALTER TABLE sends ADD COLUMN agent INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return nil, fmt.Errorf("schema: sends.agent: %w", err)
+		}
+	}
 	return &Store{db: db, aead: aead}, nil
 }
 
@@ -395,11 +404,18 @@ func (s *Store) Counts() Counts {
 	return c
 }
 
-// Send ledger: the rate limiter's memory and the audit trail (chat id and message id only).
-func (s *Store) LogSend(chat, id string, ok bool) {
+// Send ledger: the rate limiter's memory and the audit trail (chat id, message id, and whether the agent token sent
+// it; never the text).
+func (s *Store) LogSend(chat, id string, ok, agent bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.db.Exec(`INSERT INTO sends (ts,chat,id,ok) VALUES (?,?,?,?)`, time.Now().Unix(), chat, id, b2i(ok))
+	s.db.Exec(`INSERT INTO sends (ts,chat,id,ok,agent) VALUES (?,?,?,?,?)`, time.Now().Unix(), chat, id, b2i(ok), b2i(agent))
+}
+
+// AgentSendsSince counts the agent token's sends (tries included, as SendsSince does) since t.
+func (s *Store) AgentSendsSince(t time.Time) (n int) {
+	s.db.QueryRow(`SELECT COUNT(*) FROM sends WHERE agent=1 AND ts>=?`, t.Unix()).Scan(&n)
+	return
 }
 
 func (s *Store) SendsSince(t time.Time) (n int, last int64) {

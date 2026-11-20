@@ -10,8 +10,9 @@
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>WA_SEND</key><string>0</string>
-    <key>WA_READ_RECEIPTS</key><string>0</string>
+    <key>WA_SEND</key><string>__WA_SEND__</string>
+    <key>WA_READ_RECEIPTS</key><string>__WA_READ_RECEIPTS__</string>
+    <key>WA_AGENT_CHATS</key><string>__WA_AGENT_CHATS__</string>
     <key>GOMEMLIMIT</key><string>200MiB</string>
   </dict>
   <key>RunAtLoad</key><true/>
